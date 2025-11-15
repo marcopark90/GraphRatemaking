@@ -1,39 +1,84 @@
-# Graphs ------------------------------------------------------------------
+# ============================================================================
+# Visualization Script
+# ============================================================================
+# This script creates all visualizations for the analysis:
+#   - Feature importance plots (node and edge features from GNN)
+#   - Loss cost distribution and maps
+#   - Graph visualizations (simple examples, clusters, train/test splits)
+#   - t-SNE cluster visualizations
+# ============================================================================
 
-num_vars <- agg_one_way(agec, ageph, bm, power) %>%
-  wrap_plots() +
-  plot_annotation(title = "Numerical Variables")
+# Load feature importance results from Python GNN analysis
+node_feat_imp <- read_csv("./Data/Belgium/node_feats_imp.csv")
+edge_feat_imp <- read_csv("./Data/Belgium/edge_feats_imp.csv")
 
-ggsave(
-  "./Graphs/continuous_vars.png",
-  num_vars,
-  width = zoom_dims[1],
-  height = zoom_dims[2],
-  units = "in",
-  dpi = 300
-)
+node_imp <- node_feat_imp %>%
+  ggplot() +
+  geom_bar(
+    aes(x = fct_reorder(name, value), y = value),
+    stat = "identity",
+    fill = "#51127c",
+    color = "black",
+    alpha = .8
+  ) +
+  theme_bw(base_size = 22) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  xlab("") +
+  ylab("Gain") +
+  ggtitle("Node Feature Importance") +
+  coord_flip()
 
-cat_vars <- agg_one_way(coverage, fuel, use, fleet, sex, numerical = FALSE) %>%
-  wrap_plots() +
-  plot_annotation(title = "Categorical Variables")
+edge_imp <- edge_feat_imp %>%
+  ggplot() +
+  geom_bar(
+    aes(x = fct_reorder(name, value), y = value),
+    stat = "identity",
+    fill = "#fc8961",
+    color = "black",
+    alpha = .8
+  ) +
+  theme_bw(base_size = 22) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  xlab("") +
+  ylab("Gain") +
+  ggtitle("Edge Feature Importance") +
+  coord_flip()
 
-ggsave(
-  "./Graphs/binned_vars.png",
-  cat_vars,
-  width = zoom_dims[1],
-  height = zoom_dims[2],
-  units = "in",
-  dpi = 300
-)
+wrap_plots(list(node_imp, edge_imp))
 
-lc_dens <- claims %>%
-  mutate(loss_cost = amount / exposure) %>%
+# num_vars <- agg_one_way(agec, ageph, bm, power) %>%
+#   wrap_plots() +
+#   plot_annotation(title = "Numerical Variables")
+#
+# ggsave(
+#   "./Graphs/continuous_vars.png",
+#   num_vars,
+#   width = zoom_dims[1],
+#   height = zoom_dims[2],
+#   units = "in",
+#   dpi = 300
+# )
+#
+# cat_vars <- agg_one_way(coverage, fuel, use, fleet, sex, numerical = FALSE) %>%
+#   wrap_plots() +
+#   plot_annotation(title = "Categorical Variables")
+#
+# ggsave(
+#   "./Graphs/binned_vars.png",
+#   cat_vars,
+#   width = zoom_dims[1],
+#   height = zoom_dims[2],
+#   units = "in",
+#   dpi = 300
+# )
+
+lc_dens <- gnn_map %>%
   ggplot() +
   geom_density(aes(x = loss_cost), color = "#51127c", linewidth = 2) +
-  scale_x_continuous(transform = "log10") +
+  # scale_x_continuous(transform = "log10") +
   theme_bw(base_size = 22) +
   ggtitle("Loss Cost Density") +
-  xlab("Log(Los Cost)")
+  xlab("Loss Cost")
 
 ggsave(
   "./Graphs/claim_density.png",
@@ -45,9 +90,14 @@ ggsave(
 )
 
 lc_map <- ggplot() +
-  geom_sf(data = pc_map, fill = "white") +
-  geom_sf(data = claims_agg, aes(fill = loss_cost)) +
-  scale_fill_viridis(option = "F", name = "", trans = "log10") +
+  # geom_sf(data = pc_map, fill = "white") +
+  geom_sf(data = gnn_map, aes(geometry = geometry, fill = loss_cost)) +
+  scale_fill_viridis(
+    option = "F",
+    name = "",
+    trans = "log10",
+    na.value = "white"
+  ) +
   theme_bw() +
   ggtitle("Loss Cost") +
   theme(plot.title = element_text(size = 22))
@@ -61,27 +111,32 @@ ggsave(
   dpi = 300
 )
 
-gnn_map_graph <- ggplot() +
-  geom_sf(data = gnn_map, aes(fill = lc_gnn)) +
-  scale_fill_viridis(option = "magma", name = "", begin = 0) +
+gnn_map_plot <- ggplot() +
+  geom_sf(data = gnn_map, aes(geometry = geometry, fill = lc_gnn)) +
+  scale_fill_viridis(
+    option = "F",
+    name = "",
+    trans = "log10",
+    na.value = "white"
+  ) +
   theme_bw() +
   ggtitle("GNN LC Prediction") +
   theme(plot.title = element_text(size = 22))
 
 ggsave(
   "./Graphs/loss_cost_gnn_pred.png",
-  gnn_map_graph,
-  width = zoom_dims[1],
-  height = zoom_dims[2],
+  gnn_map_plot,
+  width = 14,
+  height = 7,
   units = "in",
   dpi = 300
 )
 
-gnn_bins_map_graph <- gnn_map %>%
+gnn_bins_map_plot <- gnn_map %>%
   mutate(
     lc_gnn_bins = cut(
       lc_gnn,
-      breaks = classIntervals(lc_gnn, 5, style = "kmeans")$brks,
+      breaks = classIntervals(lc_gnn, 10, style = "kmeans")$brks,
       right = FALSE,
       include.lowest = TRUE,
       labels = FALSE
@@ -89,7 +144,7 @@ gnn_bins_map_graph <- gnn_map %>%
       as_factor()
   ) %>%
   ggplot() +
-  geom_sf(aes(fill = lc_gnn_bins)) +
+  geom_sf(aes(fill = lc_gnn_bins, geometry = geometry)) +
   scale_fill_viridis(option = "magma", name = "", discrete = TRUE) +
   theme_bw() +
   ggtitle("GNN LC Binned Prediction") +
@@ -97,14 +152,14 @@ gnn_bins_map_graph <- gnn_map %>%
 
 ggsave(
   "./Graphs/loss_cost_gnn_bins_pred.png",
-  gnn_bins_map_graph,
+  gnn_bins_map_plot,
   width = zoom_dims[1],
   height = zoom_dims[2],
   units = "in",
   dpi = 300
 )
 
-gnn_map <- wrap_plots(list(gnn_map_graph, gnn_bins_map_graph))
+gnn_map <- wrap_plots(list(gnn_map_plot, gnn_bins_map_plot))
 
 ggsave(
   "./Graphs/gnn_map.png",
@@ -212,23 +267,37 @@ ggsave(
   dpi = 300
 )
 
-comm_graph <- make_graph(c("a", "b", 
-                           "b", "c", 
-                           "b", "h", 
-                           "c", "h", 
-                           "c", "d",
-                           "c", "e",
-                           "d", "h",
-                           "d", "e",
-                           "c", "d",
-                           "e", "f",
-                           "f", "g",
-                           "g", "h"))
+comm_graph <- make_graph(c(
+  "a",
+  "b",
+  "b",
+  "c",
+  "b",
+  "h",
+  "c",
+  "h",
+  "c",
+  "d",
+  "c",
+  "e",
+  "d",
+  "h",
+  "d",
+  "e",
+  "c",
+  "d",
+  "e",
+  "f",
+  "f",
+  "g",
+  "g",
+  "h"
+))
 
 E(comm_graph)$weight <- c(1, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1)
 
 comm_plot <- ggplot(data = ggnetwork(comm_graph)) +
-  geom_edges(aes(x = x, y = y, xend = xend, yend = yend, size = weight)) +
+  geom_edges(aes(x = x, y = y, xend = xend, yend = yend, linewidth = weight)) +
   geom_nodes(aes(x = x, y = y), size = 20, color = "#7f7f7f") +
   geom_nodetext(aes(x = x, y = y, label = name), size = 10) +
   ggtitle("Densest Community") +
@@ -237,7 +306,7 @@ comm_plot <- ggplot(data = ggnetwork(comm_graph)) +
     axis.title.x = element_blank(),
     axis.title.y = element_blank()
   ) +
-  guides(fill = "none", color = "none", size = "none") +
+  guides(fill = "none", color = "none", size = "none", linewidth = "none") +
   theme_void(base_size = 22) +
   scale_size(range = c(0.5, 3))
 
@@ -250,21 +319,22 @@ ggsave(
   dpi = 300
 )
 
+
 graph_cluster <- ggplot(
   data = ggnetwork(
     graph_data,
-    layout = st_centroid(pc_map) %>% st_coordinates(),
+    layout = st_centroid(gnn_map) %>% st_coordinates(),
     scale = FALSE
   )
 ) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
+  geom_sf(data = gnn_map, aes(fill = cluster %>% as_factor())) +
   scale_fill_viridis(option = "magma", discrete = TRUE, guide = "none") +
   geom_edges(
     aes(x = x, y = y, xend = xend, yend = yend),
-    linewidth = .5,
+    linewidth = .25,
     color = "#7f7f7f"
   ) +
-  geom_nodes(aes(x = x, y = y), color = "#7f7f7f") +
+  geom_nodes(aes(x = x, y = y), color = "#7f7f7f", size = .5) +
   theme_bw() +
   ggtitle("Graph Clusters") +
   theme(
@@ -283,58 +353,59 @@ ggsave(
   dpi = 300
 )
 
-graph_data_full <- reduce(
-  1:n_cl,
-  ~ add_edges(
-    .x,
-    combn(which(membership(cl) == .y), 2, simplify = FALSE) %>% list_c()
-  ),
-  .init = graph_data
-)
-
-full_graph <- ggplot(
-  data = ggnetwork(
-    graph_data_full,
-    layout = st_centroid(pc_map) %>% st_coordinates(),
-    scale = FALSE
-  )
-) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
-  scale_fill_viridis(option = "magma", discrete = TRUE, guide = "none") +
-  geom_edges(aes(x = x, y = y, xend = xend, yend = yend), linewidth = .5) +
-  geom_nodes(aes(x = x, y = y), color = "black", size = 1) +
-  theme_bw() +
-  ggtitle("Graph Clusters") +
-  theme(
-    plot.title = element_text(size = 22),
-    axis.title.x = element_blank(),
-    axis.title.y = element_blank()
-  ) +
-  guides(fill = "none", color = "none")
-
-ggsave(
-  "./Graphs/full_graph.png",
-  full_graph,
-  width = zoom_dims[1],
-  height = zoom_dims[2],
-  units = "in",
-  dpi = 300
-)
+# graph_data_full <- reduce(
+#   1:n_cl,
+#   ~ add_edges(
+#     .x,
+#     combn(which(membership(cl) == .y), 2, simplify = FALSE) %>% list_c()
+#   ),
+#   .init = graph_data
+# )
+#
+# full_graph <- ggplot(
+#   data = ggnetwork(
+#     graph_data_full,
+#     layout = st_centroid(pc_map) %>% st_coordinates(),
+#     scale = FALSE
+#   )
+# ) +
+#   geom_sf(data = pc_map, aes(fill = cluster)) +
+#   scale_fill_viridis(option = "magma", discrete = TRUE, guide = "none") +
+#   geom_edges(aes(x = x, y = y, xend = xend, yend = yend), linewidth = .5) +
+#   geom_nodes(aes(x = x, y = y), color = "black", size = 1) +
+#   theme_bw() +
+#   ggtitle("Graph Clusters") +
+#   theme(
+#     plot.title = element_text(size = 22),
+#     axis.title.x = element_blank(),
+#     axis.title.y = element_blank()
+#   ) +
+#   guides(fill = "none", color = "none")
+#
+# ggsave(
+#   "./Graphs/full_graph.png",
+#   full_graph,
+#   width = zoom_dims[1],
+#   height = zoom_dims[2],
+#   units = "in",
+#   dpi = 300
+# )
+#
 
 ind_plot <- map(
-  1:n_cl,
+  0:10,
   ~ ggplot(
     data = ggnetwork(
-      subgraph(graph_data, which(membership(cl) == .x)),
-      layout = st_centroid(pc_map) %>%
+      subgraph(graph_data, which(pull(gnn_map, cluster) == .x)),
+      layout = st_centroid(gnn_map) %>%
         filter(cluster == .x) %>%
         st_coordinates(),
       scale = FALSE
     )
   ) +
     geom_sf(
-      data = pc_map %>% filter(cluster == .x),
-      fill = viridis(n_cl, option = "magma")[.x]
+      data = gnn_map %>% filter(cluster == .x),
+      fill = viridis(11, option = "magma")[.x + 1]
     ) +
     geom_edges(
       aes(x = x, y = y, xend = xend, yend = yend),
@@ -343,16 +414,16 @@ ind_plot <- map(
     ) +
     geom_nodes(aes(x = x, y = y), size = .5, color = "#7f7f7f") +
     theme_bw() +
-    ggtitle(glue::glue("Graph Area {.x}")) +
+    ggtitle(glue::glue("Graph Cluster {.x}")) +
     theme(
       plot.title = element_text(size = 22),
       axis.title.x = element_blank(),
       axis.title.y = element_blank()
     ) +
     guides(fill = "none", color = "none") +
-    coord_sf(xlim = st_bbox(pc_map)[c(1, 3)], ylim = st_bbox(pc_map)[c(2, 4)])
+    coord_sf(xlim = st_bbox(gnn_map)[c(1, 3)], ylim = st_bbox(gnn_map)[c(2, 4)])
 ) %>%
-  wrap_plots(nrow = 2, ncol = 5)
+  wrap_plots(nrow = 3, ncol = 4)
 
 ggsave(
   "./Graphs/ind.png",
@@ -366,11 +437,11 @@ ggsave(
 map_graph <- ggplot(
   data = ggnetwork(
     subgraph(graph_data, all_idx),
-    layout = st_centroid(pc_map) %>% extract(all_idx, ) %>% st_coordinates(),
+    layout = st_centroid(gnn_map) %>% extract(all_idx, ) %>% st_coordinates(),
     scale = FALSE
   )
 ) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
+  geom_sf(data = gnn_map, aes(fill = cluster)) +
   geom_edges(
     aes(x = x, y = y, xend = xend, yend = yend),
     linewidth = .5,
@@ -390,11 +461,11 @@ map_graph <- ggplot(
 map_train <- ggplot(
   data = ggnetwork(
     subgraph(graph_data, train_idx),
-    layout = st_centroid(pc_map) %>% extract(train_idx, ) %>% st_coordinates(),
+    layout = st_centroid(gnn_map) %>% extract(train_idx, ) %>% st_coordinates(),
     scale = FALSE
   )
 ) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
+  geom_sf(data = gnn_map, aes(fill = cluster)) +
   geom_edges(
     aes(x = x, y = y, xend = xend, yend = yend),
     linewidth = .5,
@@ -414,11 +485,11 @@ map_train <- ggplot(
 map_val <- ggplot(
   data = ggnetwork(
     subgraph(graph_data, val_idx),
-    layout = st_centroid(pc_map) %>% extract(val_idx, ) %>% st_coordinates(),
+    layout = st_centroid(gnn_map) %>% extract(val_idx, ) %>% st_coordinates(),
     scale = FALSE
   )
 ) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
+  geom_sf(data = gnn_map, aes(fill = cluster)) +
   geom_edges(
     aes(x = x, y = y, xend = xend, yend = yend),
     linewidth = .5,
@@ -438,11 +509,11 @@ map_val <- ggplot(
 map_test <- ggplot(
   data = ggnetwork(
     subgraph(graph_data, test_idx),
-    layout = st_centroid(pc_map) %>% extract(test_idx, ) %>% st_coordinates(),
+    layout = st_centroid(gnn_map) %>% extract(test_idx, ) %>% st_coordinates(),
     scale = FALSE
   )
 ) +
-  geom_sf(data = pc_map, aes(fill = cluster)) +
+  geom_sf(data = gnn_map, aes(fill = cluster)) +
   geom_edges(
     aes(x = x, y = y, xend = xend, yend = yend),
     linewidth = .5,

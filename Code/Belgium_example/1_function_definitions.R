@@ -1,5 +1,37 @@
-# Function Definitions ----------------------------------------------------
+# ============================================================================
+# Function Definitions
+# ============================================================================
+# This file contains custom functions for:
+#   - Computing actuarial metrics (loss ratio, loss cost, frequency, severity)
+#   - Creating visualizations for model evaluation
+#   - Computing specialized metrics (Gini, Jensen-Shannon divergence, quantile loss)
+#   - Generating lift curves and calibration plots
+# ============================================================================
 
+# ----------------------------------------------------------------------------
+# act_metrics: Compute actuarial metrics by grouping variable
+# ----------------------------------------------------------------------------
+# Computes key insurance metrics (Loss Ratio, Loss Cost, Frequency, Severity)
+# grouped by a specified variable. Supports both categorical and numerical
+# grouping variables with various binning strategies.
+#
+# Arguments:
+#   data_in: Input data frame
+#   group_variable: Variable to group by (can be categorical or numerical)
+#   losses: Total losses/claims amount
+#   premium: Total premium
+#   exposure: Total exposure (e.g., policy years)
+#   numbers: Number of claims
+#   numerical: If TRUE, treats group_variable as numerical and bins it
+#   relative: If TRUE, returns metrics relative to overall average
+#   n: Number of bins for numerical variables
+#   bucket_type: Method for binning ("equal_range", "n_policies", "premium", "exposure")
+#   var_labels: Labels for bins
+#
+# Returns:
+#   Data frame with grouped metrics: LR (Loss Ratio), LC (Loss Cost),
+#   Freq (Frequency), Sev (Severity)
+# ----------------------------------------------------------------------------
 act_metrics <- function(
   data_in,
   group_variable,
@@ -94,7 +126,26 @@ act_metrics <- function(
   act_df
 }
 
-
+# ----------------------------------------------------------------------------
+# plot_metric: Create dual-axis plot for actuarial metrics
+# ----------------------------------------------------------------------------
+# Creates a visualization with a primary metric (line) and secondary metric
+# (bars) on dual axes. Useful for comparing loss cost with exposure, etc.
+#
+# Arguments:
+#   df: Data frame from act_metrics()
+#   main_metric: Primary metric to plot as line (e.g., Loss Cost)
+#   sec_metric: Secondary metric to plot as bars (e.g., Exposure)
+#   main_label: Label for primary metric
+#   sec_label: Label for secondary metric
+#   line_color: Color for the line
+#   bar_fill: Fill color for bars
+#   percentage: If TRUE, format y-axis as percentage
+#   var_order: Variable to order groups by (optional)
+#
+# Returns:
+#   ggplot object
+# ----------------------------------------------------------------------------
 plot_metric <- function(
   df,
   main_metric,
@@ -165,7 +216,23 @@ plot_metric <- function(
     )
 }
 
-
+# ----------------------------------------------------------------------------
+# act_plots: Generate all actuarial metric plots
+# ----------------------------------------------------------------------------
+# Creates four plots: Loss Ratio, Loss Cost, Frequency, and Severity
+# using the act_metrics() function output.
+#
+# Arguments:
+#   act_df: Output from act_metrics()
+#   premium_name: Custom name for premium variable
+#   exposure_name: Custom name for exposure variable
+#   numbers_name: Custom name for numbers variable
+#   var_order: Variable to order groups by
+#   main_title: Main title for plots
+#
+# Returns:
+#   List of four ggplot objects: lr_plot, lc_plot, freq_plot, sev_plot
+# ----------------------------------------------------------------------------
 act_plots <- function(
   act_df,
   premium_name = NULL,
@@ -531,3 +598,361 @@ agg_one_way <- function(..., numerical = TRUE) {
 #
 #   wrap_plots(list(histogram, density, box, scatter)) + plot_layout(ncol = 2, widths = c(1, 1))
 # }
+
+# ============================================================================
+# Custom Metrics for Model Evaluation
+# ============================================================================
+# These functions implement specialized metrics for insurance model evaluation:
+#   - Jensen-Shannon Divergence: Measures distributional similarity
+#   - Gini Coefficient: Measures risk discrimination ability
+#   - Quantile Loss: Evaluates performance at different quantiles
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# js_divergence_vec: Weighted Jensen-Shannon divergence (vectorized)
+# ----------------------------------------------------------------------------
+# Jensen-Shannon divergence measures how different two probability distributions
+# are. Lower values indicate better distributional alignment. This is useful
+# for insurance models where the distribution of predictions should match
+# the distribution of actual losses.
+#
+# Arguments:
+#   truth: Observed values
+#   estimate: Predicted values
+#   case_weights: Weights (typically exposure)
+#   na_rm: Remove NA values
+#
+# Returns:
+#   Scalar JSD value (in bits)
+# ----------------------------------------------------------------------------
+js_divergence_vec <- function(
+  truth,
+  estimate,
+  case_weights = NULL,
+  na_rm = TRUE,
+  ...
+) {
+  # Check for zero-length inputs
+  if (length(truth) == 0) return(NA_real_)
+
+  # Remove missing
+  if (na_rm) {
+    keep <- !(is.na(truth) | is.na(estimate))
+    truth <- truth[keep]
+    estimate <- estimate[keep]
+    if (!is.null(case_weights)) case_weights <- case_weights[keep]
+  }
+
+  # Check again after NA removal
+  if (length(truth) == 0) return(NA_real_)
+
+  # Default weights
+  if (is.null(case_weights)) case_weights <- rep(1, length(truth))
+
+  # Non-negative
+  truth <- pmax(truth, 0)
+  estimate <- pmax(estimate, 0)
+  case_weights <- pmax(case_weights, 0)
+
+  # Weighted
+  truth_w <- truth * case_weights
+  estimate_w <- estimate * case_weights
+
+  # Normalize
+  truth_w <- truth_w / sum(truth_w)
+  estimate_w <- estimate_w / sum(estimate_w)
+
+  # KL helper
+  KL <- function(p, q) sum(p * log((p + 1e-12) / (q + 1e-12)))
+
+  # Mixture
+  M <- 0.5 * (truth_w + estimate_w)
+
+  # JSD in bits
+  JSD_bits <- 0.5 * KL(truth_w, M) + 0.5 * KL(estimate_w, M)
+  JSD_bits / log(2)
+}
+
+# ----------------------------------------------------------------------------
+# js_divergence: Tidy wrapper for Jensen-Shannon divergence
+# ----------------------------------------------------------------------------
+# Wrapper function compatible with yardstick for use in tidymodels workflows.
+# ----------------------------------------------------------------------------
+js_divergence <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "js_divergence",
+    fn = js_divergence_vec,
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(js_divergence) <- c("numeric_metric", "function")
+attr(js_divergence, "direction") <- "minimize"
+
+# Load required libraries for metric functions
+library(yardstick)
+library(DescTools)
+
+# ----------------------------------------------------------------------------
+# gini_vec: Gini coefficient (vectorized)
+# ----------------------------------------------------------------------------
+# The Gini coefficient measures inequality/concentration. For insurance models,
+# it measures how well the model discriminates between high and low risk.
+# Higher Gini = better discrimination.
+#
+# Arguments:
+#   truth: Observed values (not used, but required for yardstick compatibility)
+#   estimate: Predicted values (sorted by these)
+#   case_weights: Weights (typically exposure)
+#   na_rm: Remove NA values
+#
+# Returns:
+#   Gini coefficient (0 to 1, higher is better)
+# ----------------------------------------------------------------------------
+gini_vec <- function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+  # Check for zero-length inputs
+  if (length(truth) == 0) return(NA_real_)
+
+  # Remove missing values
+  if (na_rm) {
+    keep <- !(is.na(truth) | is.na(estimate))
+    truth <- truth[keep]
+    estimate <- estimate[keep]
+    if (!is.null(case_weights)) case_weights <- case_weights[keep]
+  }
+
+  # Check again after NA removal
+  if (length(truth) == 0) return(NA_real_)
+
+  # Default weights if not provided
+  if (is.null(case_weights)) case_weights <- rep(1, length(truth))
+
+  # Calculate Gini coefficient using DescTools
+  # Gini measures concentration/inequality in the predictions
+  DescTools::Gini(estimate, weights = case_weights)
+}
+
+gini_coef <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "gini",
+    fn = gini_vec,
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(gini_coef) <- c("numeric_metric", "function")
+attr(gini_coef, "direction") <- "maximize" # Higher Gini = better discrimination
+
+# ----------------------------------------------------------------------------
+# quantile_loss_vec: Quantile loss (pinball loss) - vectorized
+# ----------------------------------------------------------------------------
+# Quantile loss evaluates model performance at specific quantiles. This is
+# important for insurance where tail risk (high quantiles) is critical.
+# Lower values indicate better performance at that quantile.
+#
+# Arguments:
+#   truth: Observed values
+#   estimate: Predicted quantile values
+#   case_weights: Weights (typically exposure)
+#   na_rm: Remove NA values
+#   tau: Quantile level (0.5 = median, 0.95 = 95th percentile)
+#
+# Returns:
+#   Weighted quantile loss
+# ----------------------------------------------------------------------------
+quantile_loss_vec <- function(
+  truth,
+  estimate,
+  case_weights = NULL,
+  na_rm = TRUE,
+  tau = 0.5,
+  ...
+) {
+  # Check for zero-length inputs
+  if (length(truth) == 0) return(NA_real_)
+
+  # Remove missing values
+  if (na_rm) {
+    keep <- !(is.na(truth) | is.na(estimate))
+    truth <- truth[keep]
+    estimate <- estimate[keep]
+    if (!is.null(case_weights)) case_weights <- case_weights[keep]
+  }
+
+  # Check again after NA removal
+  if (length(truth) == 0) return(NA_real_)
+
+  # Default weights if not provided
+  if (is.null(case_weights)) case_weights <- rep(1, length(truth))
+
+  # Calculate quantile loss (pinball loss)
+  error <- truth - estimate
+  loss <- ifelse(error >= 0, tau * error, (tau - 1) * error)
+
+  # Return weighted average
+  sum(loss * case_weights) / sum(case_weights)
+}
+
+quantile_loss <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  tau = 0.5,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = paste0("quantile_loss_", tau),
+    fn = function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+      quantile_loss_vec(truth, estimate, case_weights, na_rm, tau = tau, ...)
+    },
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(quantile_loss) <- c("numeric_metric", "function")
+attr(quantile_loss, "direction") <- "minimize"
+
+# ----------------------------------------------------------------------------
+# quantile_loss_50: Quantile loss at 50th percentile (median)
+# ----------------------------------------------------------------------------
+# Specialized wrapper for median quantile loss.
+# ----------------------------------------------------------------------------
+quantile_loss_50 <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "quantile_loss_0.5",
+    fn = function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+      quantile_loss_vec(truth, estimate, case_weights, na_rm, tau = 0.5, ...)
+    },
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(quantile_loss_50) <- c("numeric_metric", "function")
+attr(quantile_loss_50, "direction") <- "minimize"
+
+# ----------------------------------------------------------------------------
+# quantile_loss_75: Quantile loss at 75th percentile
+# ----------------------------------------------------------------------------
+# Specialized wrapper for 75th percentile quantile loss.
+# ----------------------------------------------------------------------------
+quantile_loss_75 <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "quantile_loss_0.75",
+    fn = function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+      quantile_loss_vec(truth, estimate, case_weights, na_rm, tau = 0.75, ...)
+    },
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(quantile_loss_75) <- c("numeric_metric", "function")
+attr(quantile_loss_75, "direction") <- "minimize"
+
+# ----------------------------------------------------------------------------
+# quantile_loss_90: Quantile loss at 90th percentile
+# ----------------------------------------------------------------------------
+# Specialized wrapper for 90th percentile quantile loss.
+# ----------------------------------------------------------------------------
+quantile_loss_90 <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "quantile_loss_0.9",
+    fn = function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+      quantile_loss_vec(truth, estimate, case_weights, na_rm, tau = 0.9, ...)
+    },
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(quantile_loss_90) <- c("numeric_metric", "function")
+attr(quantile_loss_90, "direction") <- "minimize"
+
+# ----------------------------------------------------------------------------
+# quantile_loss_95: Quantile loss at 95th percentile (tail risk)
+# ----------------------------------------------------------------------------
+# Specialized wrapper for 95th percentile quantile loss. Critical for
+# evaluating tail risk prediction in insurance models.
+# ----------------------------------------------------------------------------
+quantile_loss_95 <- function(
+  data,
+  truth,
+  estimate,
+  na_rm = TRUE,
+  case_weights = NULL,
+  ...
+) {
+  yardstick::numeric_metric_summarizer(
+    name = "quantile_loss_0.95",
+    fn = function(truth, estimate, case_weights = NULL, na_rm = TRUE, ...) {
+      quantile_loss_vec(truth, estimate, case_weights, na_rm, tau = 0.95, ...)
+    },
+    data = data,
+    truth = {{ truth }},
+    estimate = {{ estimate }},
+    na_rm = na_rm,
+    case_weights = {{ case_weights }}
+  )
+}
+
+class(quantile_loss_95) <- c("numeric_metric", "function")
+attr(quantile_loss_95, "direction") <- "minimize"

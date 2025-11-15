@@ -1,12 +1,5 @@
-# ============================================================================
-# Spatial Effect Visualization
-# ============================================================================
-# Extract and visualize the spatial smoothing effects from each model.
-# This shows how each model captures spatial patterns in loss cost.
-# ============================================================================
+# Plot Smoothing ----------------------------------------------------------
 
-# Create a base dataset with all postal codes and default policy characteristics
-# to extract pure spatial effects (other variables held constant)
 centr_score <- pc_map %>%
   mutate(
     st_coordinates(st_centroid(.)) %>%
